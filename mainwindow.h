@@ -28,7 +28,11 @@ private slots:
 
     void appendLog(const QString &text, bool withTimestamp = true);
 
+ 
+
 private:
     Ui::MainWindow *ui;
+
+    void runGitCommands(); // Добавлено объявление здесь!
 };
 #endif // MAINWINDOW_H

@@ -327,7 +327,53 @@ void MainWindow::on_extraButton1_clicked()
 
 void MainWindow::on_extraButton2_clicked()
 {
+   // Очистка лога перед началом операции
+    ui->logTextEdit->clear();
+    appendLog(tr("=== Начало обработки изменений ==="));
+    appendLog("");
 
+    // Получаем информацию о ядре и дату
+    QProcess itemProc(this);
+    itemProc.start("uname", QStringList{"-a"});
+    if (!itemProc.waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка получения информации о ядре.</b></font>"));
+        return;
+    }
+    QString item = itemProc.readAllStandardOutput().trimmed();
+
+    QProcess dateProc(this);
+    dateProc.start("date", QStringList{}); // Без аргументов
+    if (!dateProc.waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка получения текущей даты.</b></font>"));
+        return;
+    }
+    QString date = dateProc.readAllStandardOutput().trimmed();
+
+    // Ищем совпадения версии ядра в файлах каталога uname
+    QProcess grepProc(this);
+    grepProc.start("grep", QStringList{"-r", item.split(' ').value(4), "uname"}); // Используем пятую часть uname -a
+    if (!grepProc.waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка поиска совпадающих записей.</b></font>"));
+        return;
+    }
+    QString myVariable = grepProc.readAllStandardOutput().trimmed();
+
+    // Если совпадений нет, добавляем новую запись
+    if (myVariable.isEmpty()) {
+        appendLog(tr("Совпадений версий ядра не найдено. Добавляю новую запись."));
+
+        QProcess writeProc(this);
+        writeProc.start("/bin/sh", QStringList{"-c", QStringLiteral("echo '%1 %2' >> uname").arg(item).arg(date)}); // Используйте shell для перенаправления вывода
+        if (!writeProc.waitForFinished(5000)) {
+            appendLog(tr("<font color=\"#ff5555\"><b>Ошибка записи в файл uname.</b></font>"));
+            return;
+        }
+
+        // Выполняем Git-команды
+        runGitCommands();
+    } else {
+        appendLog(tr("Версия ядра уже зарегистрирована. Ничего не делаем."));
+    }
 }
 
 
@@ -354,3 +400,70 @@ void MainWindow::appendLog(const QString &text, bool withTimestamp)
         sb->setValue(sb->maximum());
     }
 }
+
+
+// Вспомогательная функция для запуска Git-команд
+void MainWindow::runGitCommands()
+{
+    // Настраиваем глобальные настройки Git
+    QProcess *configProcess = new QProcess(this);
+    configProcess->start("git", QStringList{"config", "--global", "user.email", "you@example.com"});
+    if (!configProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка установки email:</b></font>") +
+                  configProcess->readAllStandardError());
+        configProcess->deleteLater();
+        return;
+    }
+    appendLog(configProcess->readAllStandardOutput());
+    configProcess->deleteLater();
+
+    configProcess = new QProcess(this);
+    configProcess->start("git", QStringList{"config", "--global", "user.name", "Your Name"});
+    if (!configProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка установки имени:</b></font>") +
+                  configProcess->readAllStandardError());
+        configProcess->deleteLater();
+        return;
+    }
+    appendLog(configProcess->readAllStandardOutput());
+    configProcess->deleteLater();
+
+    // Добавляем все изменения
+    QProcess *addProcess = new QProcess(this);
+    addProcess->start("git", QStringList{"add", "."});
+    if (!addProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка добавления файлов:</b></font>") +
+                  addProcess->readAllStandardError());
+        addProcess->deleteLater();
+        return;
+    }
+    appendLog(addProcess->readAllStandardOutput());
+    addProcess->deleteLater();
+
+    // Создаем фиксацию с сообщением "Update changes"
+    QProcess *commitProcess = new QProcess(this);
+    commitProcess->start("git", QStringList{"commit", "-m", "Update changes"});
+    if (!commitProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка фиксации изменений:</b></font>") +
+                  commitProcess->readAllStandardError());
+        commitProcess->deleteLater();
+        return;
+    }
+    appendLog(commitProcess->readAllStandardOutput());
+    commitProcess->deleteLater();
+
+    // Отправляем изменения на сервер
+    QProcess *pushProcess = new QProcess(this);
+    pushProcess->start("git", QStringList{"push", "ssh://git@github.com/definitly486/uname.git"});
+    if (!pushProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка отправки изменений:</b></font>") +
+                  pushProcess->readAllStandardError());
+        pushProcess->deleteLater();
+        return;
+    }
+    appendLog(pushProcess->readAllStandardOutput());
+    pushProcess->deleteLater();
+
+    appendLog(tr("<font color=\"#50fa7b\"><b>Изменения успешно отправлены на сервер!</b></font>"));
+}
+
