@@ -138,9 +138,74 @@ void MainWindow::on_cloneRepoButton_clicked()
 
 void MainWindow::on_pushRepoButton_clicked()
 {
+    // Очищаем лог перед новой операцией
+    ui->logTextEdit->clear();
+    appendLog(tr("=== Настройка глобальных настроек Git и отправка изменений ==="));
+    appendLog("");
 
+    // Устанавливаем глобальные настройки Git с заранее определенными значениями
+    const QString email = "you@example.com";
+    const QString name = "Your Name";
+
+    // Установка глобальных настроек Git
+    QProcess *configProcess = new QProcess(this);
+    configProcess->start("git", QStringList{"config", "--global", "user.email", email});
+    if (!configProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка установки email:</b></font> ") + configProcess->readAllStandardError());
+        configProcess->deleteLater();
+        return;
+    }
+    appendLog(configProcess->readAllStandardOutput());
+    configProcess->deleteLater();
+
+    configProcess = new QProcess(this);
+    configProcess->start("git", QStringList{"config", "--global", "user.name", name});
+    if (!configProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка установки имени:</b></font> ") + configProcess->readAllStandardError());
+        configProcess->deleteLater();
+        return;
+    }
+    appendLog(configProcess->readAllStandardOutput());
+    configProcess->deleteLater();
+
+    // Добавление всех файлов
+    QProcess *addProcess = new QProcess(this);
+    addProcess->start("git", QStringList{"add", "--all"});
+    if (!addProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка добавления файлов:</b></font> ") + addProcess->readAllStandardError());
+        addProcess->deleteLater();
+        return;
+    }
+    appendLog(addProcess->readAllStandardOutput());
+    addProcess->deleteLater();
+
+    // Сообщение коммита задаётся по умолчанию ("Update changes")
+    const QString commitMsg = "Update changes";
+
+    // Фиксация изменений
+    QProcess *commitProcess = new QProcess(this);
+    commitProcess->start("git", QStringList{"commit", "-m", commitMsg});
+    if (!commitProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка фиксации изменений:</b></font> ") + commitProcess->readAllStandardError());
+        commitProcess->deleteLater();
+        return;
+    }
+    appendLog(commitProcess->readAllStandardOutput());
+    commitProcess->deleteLater();
+
+    // Отправка изменений на сервер
+    QProcess *pushProcess = new QProcess(this);
+    pushProcess->start("git", QStringList{"push", "ssh://git@github.com/xinitronix/ssd_log.git"});
+    if (!pushProcess->waitForFinished(5000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка отправки изменений:</b></font> ") + pushProcess->readAllStandardError());
+        pushProcess->deleteLater();
+        return;
+    }
+    appendLog(pushProcess->readAllStandardOutput());
+    pushProcess->deleteLater();
+
+    appendLog(tr("<font color=\"#50fa7b\"><b>Изменения успешно отправлены на сервер!</b></font>"));
 }
-
 
 
 void MainWindow::on_extraButton1_clicked()
