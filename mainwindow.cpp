@@ -263,7 +263,6 @@ void MainWindow::on_extraButton2_clicked()
 {
     ui->logTextEdit->clear();
     appendLog("=== Обновление uname (SSH) ===");
-
     QString dir = QFileDialog::getExistingDirectory(this, tr("Выберите папку с репозиторием uname"));
     if (dir.isEmpty()) return;
 
@@ -273,40 +272,54 @@ void MainWindow::on_extraButton2_clicked()
         return;
     }
 
-    // uname -a
+    // Получаем uname -a
     QProcess p(this);
     p.start("uname", {"-a"});
-    p.waitForFinished(3000);
+    p.waitForFinished(5000);
     QString kernelLine = p.readAllStandardOutput().trimmed();
+    if (kernelLine.isEmpty()) {
+        appendLog(tr("<font color=\"#ff5555\">Не удалось выполнить uname -a</font>"));
+        return;
+    }
 
-    // Проверка на дубликат
+    // Чистая строка без комментария (для сравнения)
+    QString cleanKernelLine = kernelLine.split("#").first().trimmed();
+
+    // Проверяем, есть ли уже такая запись
     QFile f(repoPath + "/uname");
     bool alreadyExists = false;
+
     if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        while (!f.atEnd()) {
-            if (f.readLine().trimmed() == kernelLine) {
+        QTextStream in(&f);
+        while (!in.atEnd()) {
+            QString line = in.readLine();
+            QString cleanLine = line.split("#").first().trimmed(); // убираем дату/комментарий
+            if (cleanLine == cleanKernelLine) {
                 alreadyExists = true;
                 break;
             }
         }
         f.close();
+    } else {
+        appendLog(tr("<font color=\"#ff5555\">Не удалось открыть файл uname для чтения</font>"));
     }
 
     if (alreadyExists) {
-        appendLog(tr("Эта запись уже существует. Пропускаем."));
+        appendLog(tr("Эта запись уже существует в файле. Пропускаем."));
         return;
     }
 
-    // Добавляем новую строку
+    // Добавляем новую запись с датой
     if (f.open(QIODevice::Append | QIODevice::Text)) {
         QTextStream out(&f);
-        out << kernelLine << "  # " << QDateTime::currentDateTime().toString() << "\n";
+        out << kernelLine << " # " << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "\n";
         f.close();
-        appendLog(tr("Новая запись добавлена в uname"));
+        appendLog(tr("Новая запись добавлена: %1").arg(kernelLine));
     } else {
         appendLog(tr("<font color=\"#ff5555\">Не удалось записать в файл uname</font>"));
         return;
     }
 
+    // Отправляем в GitHub по SSH
     gitAddCommitPushSsh(repoPath, "git@github.com:definitly486/uname.git");
 }
