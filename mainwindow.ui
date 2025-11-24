@@ -19,6 +19,10 @@
   <property name="windowTitle">
    <string>SSD Log Manager</string>
   </property>
+  <property name="windowIcon">
+   <iconset resource="resources.qrc">
+    <normaloff>:/icons/icons/freebsd.jpg</normaloff>:/icons/icons/freebsd.jpg</iconset>
+  </property>
   <property name="styleSheet">
    <string notr="true">
     QMainWindow { background-color: #f5f7fa; }
