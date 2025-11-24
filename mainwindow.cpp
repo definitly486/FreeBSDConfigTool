@@ -1,11 +1,17 @@
+// mainwindow.cpp
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+
 #include <QProcess>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QDir>
 #include <QScrollBar>
 #include <QDateTime>
+#include <QInputDialog>
+#include <QSettings>
+#include <QTextStream>
+
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -19,451 +25,288 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-void MainWindow::on_cloneRepoButton_clicked()
+// ==================================================================
+// Универсальное логирование
+// ==================================================================
+void MainWindow::appendLog(const QString &text, bool timestamp)
 {
-    // Очищаем лог перед новой операцией
-    ui->logTextEdit->clear();
-    appendLog(tr("=== Запуск клонирования репозитория ssd_log ==="));
-    appendLog("");
+    QString line = timestamp
+        ? QString("<span style=\"color:#888888\">[%1]</span> %2")
+              .arg(QDateTime::currentDateTime().toString("hh:mm:ss"))
+              .arg(text.toHtmlEscaped())
+        : text.toHtmlEscaped();
 
-    // Выбор папки, куда клонировать
-    QString dir = QFileDialog::getExistingDirectory(
-        this,
-        tr("Выберите папку для клонирования ssd_log"),
+    ui->logTextEdit->append(line);
+    if (auto *sb = ui->logTextEdit->verticalScrollBar())
+        sb->setValue(sb->maximum());
+}
+
+// ==================================================================
+// Универсальное клонирование репозитория
+// ==================================================================
+void MainWindow::cloneRepository(const QString &repoUrl,
+                                 const QString &folderName,
+                                 const QString &displayName,
+                                 QPushButton *button)
+{
+    ui->logTextEdit->clear();
+    appendLog(tr("=== Клонирование %1 ===").arg(displayName));
+
+    QString dir = QFileDialog::getExistingDirectory(this,
+        tr("Выберите папку для клонирования %1").arg(displayName),
         QDir::homePath(),
-        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks
-    );
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
 
     if (dir.isEmpty()) {
         appendLog(tr("Операция отменена пользователем."));
         return;
     }
 
-    QDir targetDir(dir);
-    QString targetPath = targetDir.filePath("ssd");
+    QDir target(dir);
+    QString targetPath = target.filePath(folderName);
 
-    appendLog(tr("Выбрана папка: %1").arg(QDir::toNativeSeparators(dir)));
-    appendLog(tr("Репозиторий будет клонирован в: %1").arg(QDir::toNativeSeparators(targetPath)));
-    appendLog("");
+    appendLog(tr("Цель: %1").arg(QDir::toNativeSeparators(targetPath)));
 
-    // Проверяем, существует ли уже папка ssd
-    if (targetDir.exists("ssd")) {
-        int ret = QMessageBox::question(
-            this,
-            tr("Папка уже существует"),
-            tr("Папка <b>ssd</b> уже существует по пути:\n%1\n\n"
-               "Удалить её и клонировать репозиторий заново?")
-               .arg(QDir::toNativeSeparators(targetPath)),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No
-        );
+    // Удаление старой папки, если есть
+    if (target.exists(folderName)) {
+        int ret = QMessageBox::question(this, tr("Папка уже существует"),
+            tr("Удалить существующую папку <b>%1</b> и клонировать заново?").arg(folderName),
+            QMessageBox::Yes | QMessageBox::No);
 
         if (ret == QMessageBox::Yes) {
-            appendLog(tr("Удаление существующей папки ssd..."));
-
-            QDir ssdDir(targetDir.filePath("ssd"));
-            if (!ssdDir.removeRecursively()) {
-                appendLog(tr("<font color=\"#ff5555\"><b>Ошибка: Не удалось удалить папку ssd!</b></font>"));
-                appendLog(tr("Возможно, папка используется другим процессом или нет прав на удаление."));
-                QMessageBox::critical(this, tr("Ошибка удаления"),
-                    tr("Не удалось удалить существующую папку ssd.\n"
-                       "Закройте все программы, использующие эту папку, и попробуйте снова."));
+            appendLog(tr("Удаление старой папки..."));
+            if (!QDir(target.filePath(folderName)).removeRecursively()) {
+                appendLog(tr("<font color=\"#ff5555\"><b>Ошибка: не удалось удалить папку!</b></font>"));
+                QMessageBox::critical(this, tr("Ошибка"),
+                    tr("Не удалось удалить папку. Закройте все программы, которые могут её использовать."));
                 return;
             }
-            appendLog(tr("Существующая папка ssd успешно удалена."));
+            appendLog(tr("Старая папка удалена."));
         } else {
             appendLog(tr("Клонирование отменено пользователем."));
             return;
         }
     }
 
-    appendLog(tr("Запуск команды:"));
-    appendLog(tr("git clone --depth=1 https://github.com/xinitronix/ssd_log ssd"));
-    appendLog(tr("Ожидайте..."));
-    appendLog("");
+    appendLog(tr("Запуск: git clone --depth=1 %1 %2").arg(repoUrl, folderName));
 
-    QProcess *gitProcess = new QProcess(this);
-    gitProcess->setWorkingDirectory(dir);
+    QProcess *proc = new QProcess(this);
+    proc->setWorkingDirectory(dir);
 
-    // Вывод стандартного потока (прогресс git)
-    connect(gitProcess, &QProcess::readyReadStandardOutput, this, [=]() {
-        QString output = gitProcess->readAllStandardOutput();
-        appendLog(output.trimmed(), false);
+    connect(proc, &QProcess::readyReadStandardOutput, this, [=]() {
+        appendLog(proc->readAllStandardOutput().trimmed(), false);
     });
-
-    // Вывод ошибок — выделяем красным
-    connect(gitProcess, &QProcess::readyReadStandardError, this, [=]() {
-        QString error = gitProcess->readAllStandardError();
-        appendLog(tr("<font color=\"#ff5555\">%1</font>").arg(error.trimmed()), false);
+    connect(proc, &QProcess::readyReadStandardError, this, [=]() {
+        appendLog("<font color=\"#ff5555\">" + proc->readAllStandardError().trimmed() + "</font>", false);
     });
-
-    // Завершение процесса
-    connect(gitProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [=](int exitCode, QProcess::ExitStatus exitStatus) mutable {
-
-        appendLog(""); // отступ
-
-        if (exitStatus == QProcess::NormalExit && exitCode == 0) {
-            appendLog(tr("<font color=\"#50fa7b\"><b>Репозиторий успешно клонирован!</b></font>"));
-            appendLog(tr("Путь: <b>%1</b>").arg(QDir::toNativeSeparators(targetPath)));
-            appendLog(tr("Готово к работе с ssd_log!"));
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [=](int code, QProcess::ExitStatus status) {
+        appendLog("");
+        if (status == QProcess::NormalExit && code == 0) {
+            appendLog(tr("<font color=\"#50fa7b\"><b>%1 успешно клонирован!</b></font>").arg(displayName));
+            appendLog(tr("Путь: %1").arg(QDir::toNativeSeparators(targetPath)));
         } else {
-            appendLog(tr("<font color=\"#ff5555\"><b>Ошибка клонирования (код выхода: %1)</b></font>").arg(exitCode));
-            appendLog(tr("Проверьте подключение к интернету и наличие Git."));
+            appendLog(tr("<font color=\"#ff5555\"><b>Ошибка клонирования (код %1)</b></font>").arg(code));
         }
-
-        ui->cloneRepoButton->setEnabled(true);
-        gitProcess->deleteLater();
+        button->setEnabled(true);
+        proc->deleteLater();
     });
 
-    // Запуск git clone
-    QStringList args = {"clone", "--depth=1", "https://github.com/xinitronix/ssd_log", "ssd"};
-    gitProcess->start("git", args);
+    button->setEnabled(false);
+    proc->start("git", {"clone", "--depth=1", repoUrl, folderName});
 
-    if (!gitProcess->waitForStarted(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Критическая ошибка: Git не найден!</b></font>"));
-        appendLog(tr("Убедитесь, что Git установлен и добавлен в PATH."));
+    if (!proc->waitForStarted(3000)) {
+        appendLog(tr("<font color=\"#ff5555\"><b>Git не найден в системе!</b></font>"));
         QMessageBox::critical(this, tr("Git не найден"),
-            tr("Команда 'git' не найдена в системе.\n"
-               "Установите Git: https://git-scm.com/downloads"));
-        gitProcess->deleteLater();
-        return;
+            tr("Установите Git: <a href=\"https://git-scm.com/downloads\">git-scm.com</a>"));
+        button->setEnabled(true);
+        proc->deleteLater();
+    } else {
+        appendLog(tr("Клонирование начато..."));
     }
-
-    // Блокируем кнопку на время клонирования
-    ui->cloneRepoButton->setEnabled(false);
-    appendLog(tr("Клонирование начато..."));
 }
 
-
-void MainWindow::on_pushRepoButton_clicked()
+// ==================================================================
+// Проверка SSH-доступа к GitHub
+// ==================================================================
+bool MainWindow::testSshAccess()
 {
-    // Очищаем лог перед новой операцией
-    ui->logTextEdit->clear();
-    appendLog(tr("=== Настройка глобальных настроек Git и отправка изменений ==="));
-    appendLog("");
-
-    // Устанавливаем глобальные настройки Git с заранее определенными значениями
-    const QString email = "you@example.com";
-    const QString name = "Your Name";
-
-    // Установка глобальных настроек Git
-    QProcess *configProcess = new QProcess(this);
-    configProcess->start("git", QStringList{"config", "--global", "user.email", email});
-    if (!configProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка установки email:</b></font> ") + configProcess->readAllStandardError());
-        configProcess->deleteLater();
-        return;
-    }
-    appendLog(configProcess->readAllStandardOutput());
-    configProcess->deleteLater();
-
-    configProcess = new QProcess(this);
-    configProcess->start("git", QStringList{"config", "--global", "user.name", name});
-    if (!configProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка установки имени:</b></font> ") + configProcess->readAllStandardError());
-        configProcess->deleteLater();
-        return;
-    }
-    appendLog(configProcess->readAllStandardOutput());
-    configProcess->deleteLater();
-
-    // Добавление всех файлов
-    QProcess *addProcess = new QProcess(this);
-    addProcess->start("git", QStringList{"add", "--all"});
-    if (!addProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка добавления файлов:</b></font> ") + addProcess->readAllStandardError());
-        addProcess->deleteLater();
-        return;
-    }
-    appendLog(addProcess->readAllStandardOutput());
-    addProcess->deleteLater();
-
-    // Сообщение коммита задаётся по умолчанию ("Update changes")
-    const QString commitMsg = "Update changes";
-
-    // Фиксация изменений
-    QProcess *commitProcess = new QProcess(this);
-    commitProcess->start("git", QStringList{"commit", "-m", commitMsg});
-    if (!commitProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка фиксации изменений:</b></font> ") + commitProcess->readAllStandardError());
-        commitProcess->deleteLater();
-        return;
-    }
-    appendLog(commitProcess->readAllStandardOutput());
-    commitProcess->deleteLater();
-
-    // Отправка изменений на сервер
-    QProcess *pushProcess = new QProcess(this);
-    pushProcess->start("git", QStringList{"push", "ssh://git@github.com/xinitronix/ssd_log.git"});
-    if (!pushProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка отправки изменений:</b></font> ") + pushProcess->readAllStandardError());
-        pushProcess->deleteLater();
-        return;
-    }
-    appendLog(pushProcess->readAllStandardOutput());
-    pushProcess->deleteLater();
-
-    appendLog(tr("<font color=\"#50fa7b\"><b>Изменения успешно отправлены на сервер!</b></font>"));
+    QProcess p(this);
+    p.start("ssh", QStringList() << "-T" << "git@github.com");
+    p.waitForFinished(5000);
+    QString output = p.readAllStandardOutput() + p.readAllStandardError();
+    return output.contains("successfully authenticated") || p.exitCode() == 1;
 }
 
+// ==================================================================
+// Универсальный add → commit → push по SSH
+// ==================================================================
+void MainWindow::gitAddCommitPushSsh(const QString &repoPath, const QString &remoteSshUrl)
+{
+    if (!testSshAccess()) {
+        appendLog(tr("<font color=\"#ff5555\"><b>SSH-доступ к GitHub не настроен!</b></font>"));
+        appendLog(tr("Выполните в терминале:"));
+        appendLog(tr("  ssh-keygen -t ed25519 -C \"you@example.com\""));
+        appendLog(tr("  eval \"$(ssh-agent -s)\""));
+        appendLog(tr("  ssh-add ~/.ssh/id_ed25519"));
+        appendLog(tr("  cat ~/.ssh/id_ed25519.pub → добавьте на https://github.com/settings/keys"));
+        QMessageBox::warning(this, tr("SSH не настроен"),
+            tr("SSH-ключи не найдены или не добавлены.\nСм. инструкцию в логе."));
+        return;
+    }
+
+    // Запрос имени/email (с сохранением)
+    QSettings settings;
+    QString email = settings.value("git/email").toString();
+    QString name  = settings.value("git/name").toString();
+
+    bool ok;
+    if (email.isEmpty()) {
+        email = QInputDialog::getText(this, tr("Git Email"), tr("Ваш email:"), QLineEdit::Normal, "", &ok);
+        if (!ok || email.isEmpty()) return;
+        settings.setValue("git/email", email);
+    }
+    if (name.isEmpty()) {
+        name = QInputDialog::getText(this, tr("Git Имя"), tr("Ваше имя:"), QLineEdit::Normal, "", &ok);
+        if (!ok || name.isEmpty()) return;
+        settings.setValue("git/name", name);
+    }
+
+    // Настройка identity в репозитории
+    QProcess cfg(this);
+    cfg.setWorkingDirectory(repoPath);
+    cfg.start("git", {"config", "user.email", email});
+    cfg.waitForFinished(3000);
+    cfg.start("git", {"config", "user.name", name});
+    cfg.waitForFinished(3000);
+
+    appendLog(tr("Git настроен: %1 <%2>").arg(name, email));
+
+    // Асинхронная цепочка команд
+    QProcess *proc = new QProcess(this);
+    proc->setWorkingDirectory(repoPath);
+
+    int step = 0;
+    QStringList steps[3] = {
+        {"add", "."},
+        {"commit", "-m", "Update changes " + QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm")},
+        {"push", remoteSshUrl}
+    };
+
+    auto nextStep = [=]() mutable {
+        if (step >= 3) {
+            appendLog(tr("<font color=\"#50fa7b\"><b>Все изменения успешно отправлены по SSH!</b></font>"));
+            proc->deleteLater();
+            return;
+        }
+        proc->start("git", steps[step]);
+        step++;
+    };
+
+    connect(proc, &QProcess::readyReadStandardOutput, this, [=]() {
+        appendLog(proc->readAllStandardOutput().trimmed(), false);
+    });
+    connect(proc, &QProcess::readyReadStandardError, this, [=]() {
+        appendLog("<font color=\"#ff5555\">" + proc->readAllStandardError().trimmed() + "</font>", false);
+    });
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [=, this](int code, QProcess::ExitStatus st) mutable {  // ← mutable обязателен!
+        if (st != QProcess::NormalExit || code != 0) {
+            appendLog(tr("<font color=\"#ff5555\"><b>Ошибка на этапе (код %1)</b></font>").arg(code));
+            QString err = proc->readAllStandardError();
+            if (err.contains("Permission denied", Qt::CaseInsensitive))
+                appendLog(tr("→ SSH-ключ не добавлен или не запущен ssh-agent"));
+            proc->deleteLater();
+            return;
+        }
+        nextStep();
+    });
+
+    appendLog(tr("Запуск git add → commit → push..."));
+    nextStep();
+}
+
+// ==================================================================
+// Кнопки
+// ==================================================================
+
+void MainWindow::on_cloneRepoButton_clicked()
+{
+    cloneRepository("https://github.com/xinitronix/ssd_log",
+                    "ssd", "ssd_log", ui->cloneRepoButton);
+}
 
 void MainWindow::on_extraButton1_clicked()
 {
-    // Очищаем лог перед новой операцией
-    ui->logTextEdit->clear();
-    appendLog(tr("=== Запуск клонирования репозитория uname ==="));
-    appendLog("");
-
-    // Выбор папки, куда клонировать
-    QString dir = QFileDialog::getExistingDirectory(
-        this,
-        tr("Выберите папку для клонирования uname"),
-        QDir::homePath(),
-        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks
-    );
-
-    if (dir.isEmpty()) {
-        appendLog(tr("Операция отменена пользователем."));
-        return;
-    }
-
-    QDir targetDir(dir);
-    QString targetPath = targetDir.filePath("uname");
-
-    appendLog(tr("Выбрана папка: %1").arg(QDir::toNativeSeparators(dir)));
-    appendLog(tr("Репозиторий будет клонирован в: %1").arg(QDir::toNativeSeparators(targetPath)));
-    appendLog("");
-
-    // Проверяем, существует ли уже папка uname
-    if (targetDir.exists("uname")) {
-        int ret = QMessageBox::question(
-            this,
-            tr("Папка уже существует"),
-            tr("Папка <b>uname</b> уже существует по пути:\n%1\n\n"
-               "Удалить её и клонировать репозиторий заново?")
-               .arg(QDir::toNativeSeparators(targetPath)),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No
-        );
-
-        if (ret == QMessageBox::Yes) {
-            appendLog(tr("Удаление существующей папки uname..."));
-
-            QDir unameDir(targetDir.filePath("uname"));
-            if (!unameDir.removeRecursively()) {
-                appendLog(tr("<font color=\"#ff5555\"><b>Ошибка: Не удалось удалить папку uname!</b></font>"));
-                appendLog(tr("Возможно, папка используется другим процессом или нет прав на удаление."));
-                QMessageBox::critical(this, tr("Ошибка удаления"),
-                    tr("Не удалось удалить существующую папку uname.\n"
-                       "Закройте все программы, использующие эту папку, и попробуйте снова."));
-                return;
-            }
-            appendLog(tr("Существующая папка uname успешно удалена."));
-        } else {
-            appendLog(tr("Клонирование отменено пользователем."));
-            return;
-        }
-    }
-
-    appendLog(tr("Запуск команды:"));
-    appendLog(tr("git clone --depth=1 https://github.com/definitly486/uname uname"));
-    appendLog(tr("Ожидайте..."));
-    appendLog("");
-
-    QProcess *gitProcess = new QProcess(this);
-    gitProcess->setWorkingDirectory(dir);
-
-    // Вывод стандартного потока (прогресс git)
-    connect(gitProcess, &QProcess::readyReadStandardOutput, this, [=]() {
-        QString output = gitProcess->readAllStandardOutput();
-        appendLog(output.trimmed(), false);
-    });
-
-    // Вывод ошибок — выделяем красным
-    connect(gitProcess, &QProcess::readyReadStandardError, this, [=]() {
-        QString error = gitProcess->readAllStandardError();
-        appendLog(tr("<font color=\"#ff5555\">%1</font>").arg(error.trimmed()), false);
-    });
-
-    // Завершение процесса
-    connect(gitProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [=](int exitCode, QProcess::ExitStatus exitStatus) mutable {
-
-        appendLog(""); // отступ
-
-        if (exitStatus == QProcess::NormalExit && exitCode == 0) {
-            appendLog(tr("<font color=\"#50fa7b\"><b>Репозиторий успешно клонирован!</b></font>"));
-            appendLog(tr("Путь: <b>%1</b>").arg(QDir::toNativeSeparators(targetPath)));
-            appendLog(tr("Готово к работе с uname!"));
-        } else {
-            appendLog(tr("<font color=\"#ff5555\"><b>Ошибка клонирования (код выхода: %1)</b></font>").arg(exitCode));
-            appendLog(tr("Проверьте подключение к интернету и наличие Git."));
-        }
-
-        ui->extraButton1->setEnabled(true); // восстанавливаем доступность кнопки
-        gitProcess->deleteLater();          // освобождаем память
-    });
-
-    // Запуск git clone
-    QStringList args = {"clone", "--depth=1", "https://github.com/definitly486/uname", "uname"};
-    gitProcess->start("git", args);
-
-    if (!gitProcess->waitForStarted(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Критическая ошибка: Git не найден!</b></font>"));
-        appendLog(tr("Убедитесь, что Git установлен и добавлен в PATH."));
-        QMessageBox::critical(this, tr("Git не найден"),
-            tr("Команда 'git' не найдена в системе.\n"
-               "Установите Git: https://git-scm.com/downloads"));
-        gitProcess->deleteLater();
-        return;
-    }
-
-    // Блокируем кнопку на время клонирования
-    ui->extraButton1->setEnabled(false);
-    appendLog(tr("Клонирование начато..."));
+    cloneRepository("https://github.com/definitly486/uname",
+                    "uname", "uname", ui->extraButton1);
 }
 
+void MainWindow::on_pushRepoButton_clicked()
+{
+    ui->logTextEdit->clear();
+    appendLog("=== Push в ssd_log (SSH) ===");
+
+    QString dir = QFileDialog::getExistingDirectory(this, tr("Выберите папку с репозиторием ssd_log"));
+    if (dir.isEmpty()) return;
+
+    QString repoPath = QDir(dir).filePath("ssd");
+    if (!QDir(repoPath).exists()) {
+        appendLog(tr("<font color=\"#ff5555\">Папка ssd не найдена!</font>"));
+        return;
+    }
+
+    gitAddCommitPushSsh(repoPath, "git@github.com:xinitronix/ssd_log.git");
+}
 
 void MainWindow::on_extraButton2_clicked()
 {
-   // Очистка лога перед началом операции
     ui->logTextEdit->clear();
-    appendLog(tr("=== Начало обработки изменений ==="));
-    appendLog("");
+    appendLog("=== Обновление uname (SSH) ===");
 
-    // Получаем информацию о ядре и дату
-    QProcess itemProc(this);
-    itemProc.start("uname", QStringList{"-a"});
-    if (!itemProc.waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка получения информации о ядре.</b></font>"));
+    QString dir = QFileDialog::getExistingDirectory(this, tr("Выберите папку с репозиторием uname"));
+    if (dir.isEmpty()) return;
+
+    QString repoPath = QDir(dir).filePath("uname");
+    if (!QDir(repoPath).exists()) {
+        appendLog(tr("<font color=\"#ff5555\">Папка uname не найдена!</font>"));
         return;
     }
-    QString item = itemProc.readAllStandardOutput().trimmed();
 
-    QProcess dateProc(this);
-    dateProc.start("date", QStringList{}); // Без аргументов
-    if (!dateProc.waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка получения текущей даты.</b></font>"));
-        return;
-    }
-    QString date = dateProc.readAllStandardOutput().trimmed();
+    // uname -a
+    QProcess p(this);
+    p.start("uname", {"-a"});
+    p.waitForFinished(3000);
+    QString kernelLine = p.readAllStandardOutput().trimmed();
 
-    // Ищем совпадения версии ядра в файлах каталога uname
-    QProcess grepProc(this);
-    grepProc.start("grep", QStringList{"-r", item.split(' ').value(4), "uname"}); // Используем пятую часть uname -a
-    if (!grepProc.waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка поиска совпадающих записей.</b></font>"));
-        return;
-    }
-    QString myVariable = grepProc.readAllStandardOutput().trimmed();
-
-    // Если совпадений нет, добавляем новую запись
-    if (myVariable.isEmpty()) {
-        appendLog(tr("Совпадений версий ядра не найдено. Добавляю новую запись."));
-
-        QProcess writeProc(this);
-        writeProc.start("/bin/sh", QStringList{"-c", QStringLiteral("echo '%1 %2' >> uname").arg(item).arg(date)}); // Используйте shell для перенаправления вывода
-        if (!writeProc.waitForFinished(5000)) {
-            appendLog(tr("<font color=\"#ff5555\"><b>Ошибка записи в файл uname.</b></font>"));
-            return;
+    // Проверка на дубликат
+    QFile f(repoPath + "/uname");
+    bool alreadyExists = false;
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        while (!f.atEnd()) {
+            if (f.readLine().trimmed() == kernelLine) {
+                alreadyExists = true;
+                break;
+            }
         }
+        f.close();
+    }
 
-        // Выполняем Git-команды
-        runGitCommands();
+    if (alreadyExists) {
+        appendLog(tr("Эта запись уже существует. Пропускаем."));
+        return;
+    }
+
+    // Добавляем новую строку
+    if (f.open(QIODevice::Append | QIODevice::Text)) {
+        QTextStream out(&f);
+        out << kernelLine << "  # " << QDateTime::currentDateTime().toString() << "\n";
+        f.close();
+        appendLog(tr("Новая запись добавлена в uname"));
     } else {
-        appendLog(tr("Версия ядра уже зарегистрирована. Ничего не делаем."));
+        appendLog(tr("<font color=\"#ff5555\">Не удалось записать в файл uname</font>"));
+        return;
     }
+
+    gitAddCommitPushSsh(repoPath, "git@github.com:definitly486/uname.git");
 }
-
-
-// Вставь это где-нибудь в mainwindow.cpp (лучше в конец файла, после всех слотов)
-void MainWindow::appendLog(const QString &text, bool withTimestamp)
-{
-    QString line;
-
-    if (withTimestamp) {
-        QString time = QDateTime::currentDateTime().toString("hh:mm:ss");
-        line = QString("<span style=\"color:#888888\">[%1]</span> %2")
-               .arg(time)
-               .arg(text.toHtmlEscaped());  // важно! защита от HTML-инъекций
-    } else {
-        line = text.toHtmlEscaped();
-    }
-
-    // Вставляем HTML-текст
-    ui->logTextEdit->append(line);
-
-    // Автоматическая прокрутка вниз
-    QScrollBar *sb = ui->logTextEdit->verticalScrollBar();
-    if (sb) {
-        sb->setValue(sb->maximum());
-    }
-}
-
-
-// Вспомогательная функция для запуска Git-команд
-void MainWindow::runGitCommands()
-{
-    // Настраиваем глобальные настройки Git
-    QProcess *configProcess = new QProcess(this);
-    configProcess->start("git", QStringList{"config", "--global", "user.email", "you@example.com"});
-    if (!configProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка установки email:</b></font>") +
-                  configProcess->readAllStandardError());
-        configProcess->deleteLater();
-        return;
-    }
-    appendLog(configProcess->readAllStandardOutput());
-    configProcess->deleteLater();
-
-    configProcess = new QProcess(this);
-    configProcess->start("git", QStringList{"config", "--global", "user.name", "Your Name"});
-    if (!configProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка установки имени:</b></font>") +
-                  configProcess->readAllStandardError());
-        configProcess->deleteLater();
-        return;
-    }
-    appendLog(configProcess->readAllStandardOutput());
-    configProcess->deleteLater();
-
-    // Добавляем все изменения
-    QProcess *addProcess = new QProcess(this);
-    addProcess->start("git", QStringList{"add", "."});
-    if (!addProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка добавления файлов:</b></font>") +
-                  addProcess->readAllStandardError());
-        addProcess->deleteLater();
-        return;
-    }
-    appendLog(addProcess->readAllStandardOutput());
-    addProcess->deleteLater();
-
-    // Создаем фиксацию с сообщением "Update changes"
-    QProcess *commitProcess = new QProcess(this);
-    commitProcess->start("git", QStringList{"commit", "-m", "Update changes"});
-    if (!commitProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка фиксации изменений:</b></font>") +
-                  commitProcess->readAllStandardError());
-        commitProcess->deleteLater();
-        return;
-    }
-    appendLog(commitProcess->readAllStandardOutput());
-    commitProcess->deleteLater();
-
-    // Отправляем изменения на сервер
-    QProcess *pushProcess = new QProcess(this);
-    pushProcess->start("git", QStringList{"push", "ssh://git@github.com/definitly486/uname.git"});
-    if (!pushProcess->waitForFinished(5000)) {
-        appendLog(tr("<font color=\"#ff5555\"><b>Ошибка отправки изменений:</b></font>") +
-                  pushProcess->readAllStandardError());
-        pushProcess->deleteLater();
-        return;
-    }
-    appendLog(pushProcess->readAllStandardOutput());
-    pushProcess->deleteLater();
-
-    appendLog(tr("<font color=\"#50fa7b\"><b>Изменения успешно отправлены на сервер!</b></font>"));
-}
-
